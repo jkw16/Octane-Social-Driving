@@ -1,0 +1,9 @@
+{
+  "name": "Octane: Social Driving",
+  "description": "A social driving game for car enthusiasts featuring competitive track modes, safe driving challenges, and real-time crew voice chat.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone",
+    "geolocation"
+  ]
+}
