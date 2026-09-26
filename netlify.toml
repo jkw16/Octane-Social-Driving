@@ -1,0 +1,21 @@
+# Netlify config for the Octane PWA.
+#
+# This makes "drag the dist/ folder into Netlify Drop" just work:
+#   - publish = "dist"  → the folder Netlify serves
+#   - the SPA redirect    → every path falls back to index.html so client-side
+#                            routes never 404 (and a 200 is returned so Safari
+#                            can install the PWA from any sub-path)
+#
+# No build command is set here because Netlify Drop uploads a pre-built folder;
+# if you later connect a git repo, set:
+#   [build]
+#     command = "npm run build"
+#     publish = "dist"
+
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+[build]
+  publish = "dist"

@@ -1,0 +1,362 @@
+import React, { useEffect, useRef, useState } from 'react';
+import * as maplibregl from 'maplibre-gl';
+import { Navigation, Search, ArrowRight, X, Loader2, Map as MapIcon, ChevronRight } from 'lucide-react';
+import { supabase } from '../supabase/client';
+import { geminiGenerate, responseText, responseChunks } from '../supabase/gemini';
+import { DARK_RASTER_STYLE } from '../services/mapStyle';
+
+// Build a GeoJSON Polygon approximating a geographic circle of `radiusMeters`
+// around [lng, lat] using the destination-point formula (haversine-based).
+// MapLibre's `circle` layer type is screen-pixel radius, not meters, so we
+// draw a 64-sided polygon ring instead. 500 ft proxy-chat range = 152.4 m.
+const circleGeoJSON = (lng: number, lat: number, radiusMeters: number) => {
+  const R = 6378137; // earth radius (m)
+  const delta = radiusMeters / R;
+  const latRad = (lat * Math.PI) / 180;
+  const steps = 64;
+  const ring: [number, number][] = [];
+  for (let i = 0; i <= steps; i++) {
+    const theta = (i * 360) / steps; // degrees; closes the ring (last == first)
+    const thetaRad = (theta * Math.PI) / 180;
+    const lat2Rad = Math.asin(
+      Math.sin(latRad) * Math.cos(delta) +
+        Math.cos(latRad) * Math.sin(delta) * Math.cos(thetaRad)
+    );
+    const lng2Rad =
+      (lng * Math.PI) / 180 +
+      Math.atan2(
+        Math.sin(thetaRad) * Math.sin(delta) * Math.cos(latRad),
+        Math.cos(delta) - Math.sin(latRad) * Math.sin(lat2Rad)
+      );
+    ring.push([(lng2Rad * 180) / Math.PI, (lat2Rad * 180) / Math.PI]);
+  }
+  return {
+    type: 'Feature',
+    geometry: { type: 'Polygon', coordinates: [ring] },
+    properties: {},
+  };
+};
+
+const RANGE_RADIUS_M = 152.4; // 500 ft in meters
+
+export const CruiseMode: React.FC = () => {
+  const mapContainerRef = useRef<HTMLDivElement>(null);
+  const mapInstanceRef = useRef<maplibregl.Map | null>(null);
+  const markerRef = useRef<maplibregl.Marker | null>(null);
+  const [speed, setSpeed] = useState(0);
+  const [heading, setHeading] = useState(0);
+  const [currentLocation, setCurrentLocation] = useState<{lat: number, lng: number} | null>(null);
+
+  // Full-screen map toggle. Default to the menu (cards); map mounts on demand.
+  const [mapOpen, setMapOpen] = useState(false);
+  // In-page map diagnostics — surfaces MapLibre load/error events as text so a
+  // blank map can be diagnosed without browser dev tools.
+  const [mapStatus, setMapStatus] = useState<string>('Initializing…');
+
+  // Route / Smart Search State
+  const [destinationInput, setDestinationInput] = useState('');
+  const [isRouteActive, setIsRouteActive] = useState(false);
+  const [isSearching, setIsSearching] = useState(false);
+  const [resolvedPlace, setResolvedPlace] = useState<{
+      name: string;
+      address?: string;
+      rating?: number;
+      uri?: string;
+  } | null>(null);
+
+  // GPS tracking — always running so the speed card works in the menu,
+  // and so the map can center on the user the moment it opens.
+  useEffect(() => {
+    const watchId = navigator.geolocation.watchPosition(
+      (pos) => {
+        const { latitude, longitude, speed: gpsSpeed, heading: gpsHeading } = pos.coords;
+        setSpeed(gpsSpeed ? Math.round(gpsSpeed * 2.23694) : 0);
+        setCurrentLocation({ lat: latitude, lng: longitude });
+        if (gpsHeading) setHeading(gpsHeading);
+
+        if (mapInstanceRef.current && markerRef.current) {
+          markerRef.current.setLngLat([longitude, latitude]);
+          mapInstanceRef.current.jumpTo({ center: [longitude, latitude], zoom: 16 });
+          // Move the 500-ft range circle with the user.
+          const rangeSrc = mapInstanceRef.current.getSource('range') as
+            | maplibregl.GeoJSONSource
+            | undefined;
+          if (rangeSrc && typeof rangeSrc.setData === 'function') {
+            rangeSrc.setData(circleGeoJSON(longitude, latitude, RANGE_RADIUS_M));
+          }
+        }
+      },
+      (err) => console.error(err),
+      { enableHighAccuracy: true, timeout: 5000, maximumAge: 0 }
+    );
+    return () => navigator.geolocation.clearWatch(watchId);
+  }, []);
+
+  // Map — only mounted when the user opens it full-screen.
+  useEffect(() => {
+    if (!mapOpen || !mapContainerRef.current) return;
+
+    const center: [number, number] = currentLocation
+      ? [currentLocation.lng, currentLocation.lat]
+      : [-118.2437, 34.0522]; // [lng, lat] — default LA
+
+    // MapLibre GL — free, no-key raster basemap (CARTO dark tiles). Raster tiles
+    // render on a wider range of devices and aren't silently dropped by
+    // content blockers the way the OpenFreeMap vector tiles were.
+    const map = new maplibregl.Map({
+      container: mapContainerRef.current,
+      style: DARK_RASTER_STYLE as any,
+      center,
+      zoom: 16,
+      attributionControl: false,
+    });
+    mapInstanceRef.current = map;
+
+    // User marker (cyan dot).
+    const el = document.createElement('div');
+    el.style.cssText = 'background:#06b6d4;width:16px;height:16px;border-radius:50%;border:3px solid #fff;box-shadow:0 0 15px #06b6d4;';
+    const marker = new maplibregl.Marker(el).setLngLat(center).addTo(map);
+    markerRef.current = marker;
+
+    // 500-ft proxy-chat range circle — light-blue transparent fill around the
+    // user, drawn as a GeoJSON polygon (MapLibre `circle` is screen px, not m).
+    // Style is an inline raster object, so it loads synchronously and these
+    // addSource/addLayer calls queue fine; wrapped in 'load' as a safety net.
+    const addRangeLayer = () => {
+      if (map.getSource('range')) return; // guard double-add on reload
+      map.addSource('range', {
+        type: 'geojson',
+        data: circleGeoJSON(center[0], center[1], RANGE_RADIUS_M),
+      });
+      map.addLayer({
+        id: 'range-fill',
+        source: 'range',
+        type: 'fill',
+        paint: { 'fill-color': '#06b6d4', 'fill-opacity': 0.15 },
+      });
+      map.addLayer({
+        id: 'range-border',
+        source: 'range',
+        type: 'line',
+        paint: { 'line-color': '#06b6d4', 'line-width': 1, 'line-opacity': 0.4 },
+      });
+    };
+    if (map.loaded() || map.isStyleLoaded()) addRangeLayer();
+    else map.on('load', addRangeLayer);
+
+    // Mobile layout can settle a frame after mount; force a re-measure so the
+    // canvas always picks up the real container size (MapLibre renders nothing
+    // in a 0-height container).
+    let tilesLoaded = 0;
+    map.on('load', () => { map.resize(); setMapStatus(`Style loaded — ${tilesLoaded} tiles`); });
+    map.on('style.load', () => setMapStatus('Style loaded — fetching tiles…'));
+    // Count tiles as they arrive so we get positive confirmation the basemap is
+    // actually loading (vs. silently blocked).
+    map.on('sourcedata', (e: any) => {
+      if (e?.isSourceLoaded && e?.sourceDataType === 'tiles' && e?.tile) {
+        tilesLoaded += 1;
+        setMapStatus(`Loaded ${tilesLoaded} tiles`);
+      }
+    });
+    // Surface every map error in-page (tile/source/style/WebGL failures) so a
+    // blank map can be diagnosed without dev tools.
+    map.on('error', (e: any) => {
+      const msg = e?.error?.message || e?.error?.status || (e?.source ? `source "${e.source}" failed` : 'tile/source error');
+      setMapStatus(`ERROR: ${msg}`);
+    });
+    requestAnimationFrame(() => map.resize());
+
+    return () => {
+      map.remove();
+      mapInstanceRef.current = null;
+      markerRef.current = null;
+    };
+  }, [mapOpen]);
+
+  const handleSmartSearch = async () => {
+      if (!destinationInput.trim() || !supabase) return;
+      // AI features go through the gemini-proxy Edge Function (requires sign-in).
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session) return;
+
+      setIsSearching(true);
+      setResolvedPlace(null);
+
+      try {
+        const response = await geminiGenerate({
+            contents: `Find the specific location for: "${destinationInput}". If it's a generic term like "gas" or "coffee", find the nearest one. Provide the name and address.`,
+            config: {
+                tools: [{ googleMaps: {} }],
+                toolConfig: {
+                    retrievalConfig: {
+                        latLng: currentLocation ? { latitude: currentLocation.lat, longitude: currentLocation.lng } : undefined
+                    }
+                }
+            }
+        });
+
+        const text = responseText(response);
+        const chunks = responseChunks(response);
+
+        // Extract data from Grounding Chunks (Priority)
+        const mapChunk = chunks.find((c: any) => c.web?.uri && c.web?.title);
+
+        let placeName = destinationInput;
+        let placeUri = "";
+
+        if (mapChunk && mapChunk.web) {
+             placeName = mapChunk.web.title || placeName;
+             placeUri = mapChunk.web.uri || "";
+        } else {
+             // Fallback to text parsing if no chunks (unlikely with valid maps result)
+             placeName = text.split('\n')[0] || destinationInput;
+        }
+
+        setResolvedPlace({
+            name: placeName,
+            address: "Tap navigate for details", // Simplified for UI
+            uri: placeUri
+        });
+        setIsRouteActive(true);
+
+      } catch (error) {
+          console.error("Maps Grounding Error:", error);
+          // Fallback to manual input
+          setResolvedPlace({
+              name: destinationInput,
+              address: "Custom Destination",
+              uri: `https://www.google.com/maps/search/?api=1&query=${encodeURIComponent(destinationInput)}`
+          });
+          setIsRouteActive(true);
+      } finally {
+          setIsSearching(false);
+      }
+  };
+
+  const handleStartNavigation = () => {
+      if (!resolvedPlace) return;
+
+      const url = resolvedPlace.uri
+        ? resolvedPlace.uri
+        : `https://www.google.com/maps/dir/?api=1&destination=${encodeURIComponent(resolvedPlace.name)}&travelmode=driving`;
+
+      window.open(url, '_blank');
+  };
+
+  return (
+    <div className="h-full w-full relative bg-gray-900 overflow-hidden flex flex-col">
+      {mapOpen ? (
+        // Fixed full-screen overlay: the map container gets real viewport
+        // pixels (100vw x 100vh) independent of the flex/percentage-height chain
+        // above, which collapses to 0 on some mobile browsers and leaves
+        // MapLibre rendering nothing.
+        <div className="fixed inset-0 z-50 bg-gray-900">
+          <div ref={mapContainerRef} className="absolute inset-0" />
+          <button
+            onClick={() => setMapOpen(false)}
+            className="absolute top-4 right-4 z-10 bg-octane-black/90 border border-white/10 rounded-full p-2 text-white hover:bg-octane-black transition-colors shadow-2xl"
+            aria-label="Close map"
+          >
+            <X className="w-5 h-5" />
+          </button>
+          {/* In-page diagnostics — read this text to diagnose a blank map. */}
+          <div className="absolute top-4 left-4 z-10 max-w-[80%] bg-octane-black/90 border border-white/10 rounded-lg px-3 py-2 text-[11px] font-mono text-white shadow-2xl pointer-events-none">
+            map: {mapStatus}
+          </div>
+        </div>
+      ) : (
+        /* Menu — three cards: search, open map, speed */
+        <div className="relative z-10 h-full w-full p-4 pb-24 flex flex-col gap-4 overflow-y-auto">
+          {/* Card 1 — Location search / destination */}
+          {!isRouteActive ? (
+            <div className="bg-octane-black/90 p-2 rounded-xl border border-white/10 backdrop-blur-md shadow-2xl">
+              <div className="flex items-center gap-2 px-2">
+                <Search className={`w-5 h-5 ${isSearching ? 'text-octane-accent animate-pulse' : 'text-gray-400'}`} />
+                <input
+                  type="text"
+                  value={destinationInput}
+                  onChange={(e) => setDestinationInput(e.target.value)}
+                  placeholder="Search places (e.g. Shell, Cafe)..."
+                  className="flex-1 bg-transparent border-none text-white focus:outline-none py-3 text-sm font-medium placeholder-gray-500"
+                  onKeyDown={(e) => e.key === 'Enter' && handleSmartSearch()}
+                  disabled={isSearching}
+                />
+                {(destinationInput || isSearching) && (
+                  <button
+                    onClick={handleSmartSearch}
+                    disabled={isSearching}
+                    className="bg-octane-accent text-black p-2 rounded-lg font-bold disabled:opacity-50"
+                  >
+                    {isSearching ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
+                  </button>
+                )}
+              </div>
+            </div>
+          ) : (
+            <div className="bg-octane-dark/95 p-4 rounded-xl border border-octane-accent/30 backdrop-blur-md shadow-2xl animate-in slide-in-from-top-2">
+              <div className="flex justify-between items-start mb-4">
+                <div className="flex-1">
+                  <div className="text-[10px] text-gray-400 uppercase font-bold tracking-wider mb-1 flex items-center gap-1">
+                    <MapIcon className="w-3 h-3 text-octane-accent" /> Destination Set
+                  </div>
+                  <h3 className="text-xl font-bold text-white leading-tight pr-4">{resolvedPlace?.name || destinationInput}</h3>
+                  <p className="text-xs text-gray-500 mt-1 line-clamp-1">{resolvedPlace?.address}</p>
+                </div>
+                <button onClick={() => { setIsRouteActive(false); setDestinationInput(''); setResolvedPlace(null); }} className="text-gray-400 hover:text-white p-1">
+                  <X className="w-5 h-5" />
+                </button>
+              </div>
+
+              <div className="grid grid-cols-2 gap-2 mb-4">
+                <div className="bg-white/5 rounded-lg p-2 border border-white/5">
+                  <div className="text-[10px] text-gray-500">Routing</div>
+                  <div className="text-white font-mono font-bold text-xs">Google Maps</div>
+                </div>
+                <div className="bg-white/5 rounded-lg p-2 border border-white/5">
+                  <div className="text-[10px] text-gray-500">Status</div>
+                  <div className="text-octane-success font-mono font-bold text-xs">Ready</div>
+                </div>
+              </div>
+
+              <button
+                onClick={handleStartNavigation}
+                className="w-full bg-blue-600 hover:bg-blue-500 text-white py-3 rounded-lg font-bold flex items-center justify-center gap-2 transition-colors"
+              >
+                <Navigation className="w-4 h-4 fill-current" />
+                Start Navigation
+              </button>
+            </div>
+          )}
+
+          {/* Card 2 — Open full-screen map */}
+          <button
+            onClick={() => { setMapStatus('Initializing…'); setMapOpen(true); }}
+            className="bg-octane-black/90 p-4 rounded-xl border border-white/10 backdrop-blur-md shadow-2xl flex items-center justify-between text-left transition-colors hover:border-octane-accent/40"
+          >
+            <div className="flex items-center gap-3">
+              <div className="w-10 h-10 rounded-lg bg-octane-accent/10 flex items-center justify-center">
+                <MapIcon className="w-5 h-5 text-octane-accent" />
+              </div>
+              <div>
+                <div className="text-white font-bold text-sm">Live Map</div>
+                <div className="text-gray-500 text-xs">Open full-screen map view</div>
+              </div>
+            </div>
+            <ChevronRight className="w-5 h-5 text-gray-500" />
+          </button>
+
+          {/* Card 3 — Speed (pinned to bottom) */}
+          <div className="mt-auto bg-octane-black/80 backdrop-blur p-4 rounded-2xl border border-white/5 flex justify-between items-center">
+            <div>
+              <div className="text-[10px] text-gray-500 uppercase">Current Speed</div>
+              <div className="text-2xl font-display font-black text-white">{speed} <span className="text-sm text-gray-500 font-sans">MPH</span></div>
+            </div>
+            <div>
+              <Navigation className="w-8 h-8 text-gray-600" style={{ transform: `rotate(${heading}deg)` }} />
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+};
