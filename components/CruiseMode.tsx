@@ -1,9 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as maplibregl from 'maplibre-gl';
 import { Navigation, Search, ArrowRight, X, Loader2, Map as MapIcon, ChevronRight } from 'lucide-react';
-import { supabase } from '../supabase/client';
-import { geminiGenerate, responseText, responseChunks } from '../supabase/gemini';
-import { DARK_RASTER_STYLE } from '../services/mapStyle';
+import { MapCanvas, addGeoJsonSource, updateGeoJsonSource } from './map';
+import { createCarPuckMarker, setCarPuckHeading } from './map/markers';
+import { resolvePlaceNear, hasAiPlacesSession } from '../services/geocoding';
 
 // Build a GeoJSON Polygon approximating a geographic circle of `radiusMeters`
 // around [lng, lat] using the destination-point formula (haversine-based).
@@ -40,7 +40,6 @@ const circleGeoJSON = (lng: number, lat: number, radiusMeters: number) => {
 const RANGE_RADIUS_M = 152.4; // 500 ft in meters
 
 export const CruiseMode: React.FC = () => {
-  const mapContainerRef = useRef<HTMLDivElement>(null);
   const mapInstanceRef = useRef<maplibregl.Map | null>(null);
   const markerRef = useRef<maplibregl.Marker | null>(null);
   const [speed, setSpeed] = useState(0);
@@ -76,14 +75,22 @@ export const CruiseMode: React.FC = () => {
 
         if (mapInstanceRef.current && markerRef.current) {
           markerRef.current.setLngLat([longitude, latitude]);
-          mapInstanceRef.current.jumpTo({ center: [longitude, latitude], zoom: 16 });
+          // Glide to each fix instead of jumping — easeTo over the interval
+          // between fixes reads like a car moving, not a teleport. Linear
+          // easing (no bow) so chained easeTo calls don't pulse.
+          mapInstanceRef.current.easeTo({
+            center: [longitude, latitude],
+            zoom: 16,
+            duration: 750,
+            easing: (t) => t,
+          });
+          if (gpsHeading) setCarPuckHeading(markerRef.current, gpsHeading);
           // Move the 500-ft range circle with the user.
-          const rangeSrc = mapInstanceRef.current.getSource('range') as
-            | maplibregl.GeoJSONSource
-            | undefined;
-          if (rangeSrc && typeof rangeSrc.setData === 'function') {
-            rangeSrc.setData(circleGeoJSON(longitude, latitude, RANGE_RADIUS_M));
-          }
+          updateGeoJsonSource(
+            mapInstanceRef.current,
+            'range',
+            circleGeoJSON(longitude, latitude, RANGE_RADIUS_M)
+          );
         }
       },
       (err) => console.error(err),
@@ -92,63 +99,45 @@ export const CruiseMode: React.FC = () => {
     return () => navigator.geolocation.clearWatch(watchId);
   }, []);
 
-  // Map — only mounted when the user opens it full-screen.
-  useEffect(() => {
-    if (!mapOpen || !mapContainerRef.current) return;
-
+  // Map — only mounted when the user opens it full-screen. All construction
+  // and cleanup lives in MapCanvas; this wires up the cruise-specific bits:
+  // user marker, 500-ft range circle and the in-page load diagnostics.
+  const setupCruiseMap = (map: maplibregl.Map) => {
     const center: [number, number] = currentLocation
       ? [currentLocation.lng, currentLocation.lat]
       : [-118.2437, 34.0522]; // [lng, lat] — default LA
 
-    // MapLibre GL — free, no-key raster basemap (CARTO dark tiles). Raster tiles
-    // render on a wider range of devices and aren't silently dropped by
-    // content blockers the way the OpenFreeMap vector tiles were.
-    const map = new maplibregl.Map({
-      container: mapContainerRef.current,
-      style: DARK_RASTER_STYLE as any,
-      center,
-      zoom: 16,
-      attributionControl: false,
-    });
     mapInstanceRef.current = map;
 
-    // User marker (cyan dot).
-    const el = document.createElement('div');
-    el.style.cssText = 'background:#06b6d4;width:16px;height:16px;border-radius:50%;border:3px solid #fff;box-shadow:0 0 15px #06b6d4;';
-    const marker = new maplibregl.Marker(el).setLngLat(center).addTo(map);
+    // User marker — car puck with a heading needle (rotates as GPS heading
+    // streams in; see the watch effect).
+    const marker = createCarPuckMarker().setLngLat(center).addTo(map);
     markerRef.current = marker;
 
     // 500-ft proxy-chat range circle — light-blue transparent fill around the
     // user, drawn as a GeoJSON polygon (MapLibre `circle` is screen px, not m).
-    // Style is an inline raster object, so it loads synchronously and these
-    // addSource/addLayer calls queue fine; wrapped in 'load' as a safety net.
-    const addRangeLayer = () => {
-      if (map.getSource('range')) return; // guard double-add on reload
-      map.addSource('range', {
-        type: 'geojson',
-        data: circleGeoJSON(center[0], center[1], RANGE_RADIUS_M),
-      });
-      map.addLayer({
-        id: 'range-fill',
-        source: 'range',
-        type: 'fill',
-        paint: { 'fill-color': '#06b6d4', 'fill-opacity': 0.15 },
-      });
-      map.addLayer({
-        id: 'range-border',
-        source: 'range',
-        type: 'line',
-        paint: { 'line-color': '#06b6d4', 'line-width': 1, 'line-opacity': 0.4 },
-      });
-    };
-    if (map.loaded() || map.isStyleLoaded()) addRangeLayer();
-    else map.on('load', addRangeLayer);
+    addGeoJsonSource(
+      map,
+      'range',
+      circleGeoJSON(center[0], center[1], RANGE_RADIUS_M),
+      [
+        {
+          id: 'range-fill',
+          type: 'fill',
+          paint: { 'fill-color': '#06b6d4', 'fill-opacity': 0.15 },
+        },
+        {
+          id: 'range-border',
+          type: 'line',
+          paint: { 'line-color': '#06b6d4', 'line-width': 1, 'line-opacity': 0.4 },
+        },
+      ]
+    );
 
-    // Mobile layout can settle a frame after mount; force a re-measure so the
-    // canvas always picks up the real container size (MapLibre renders nothing
-    // in a 0-height container).
+    // In-page diagnostics — surfaces MapLibre load/error events as text so a
+    // blank map can be diagnosed without browser dev tools.
     let tilesLoaded = 0;
-    map.on('load', () => { map.resize(); setMapStatus(`Style loaded — ${tilesLoaded} tiles`); });
+    map.on('load', () => { setMapStatus(`Style loaded — ${tilesLoaded} tiles`); });
     map.on('style.load', () => setMapStatus('Style loaded — fetching tiles…'));
     // Count tiles as they arrive so we get positive confirmation the basemap is
     // actually loading (vs. silently blocked).
@@ -164,58 +153,32 @@ export const CruiseMode: React.FC = () => {
       const msg = e?.error?.message || e?.error?.status || (e?.source ? `source "${e.source}" failed` : 'tile/source error');
       setMapStatus(`ERROR: ${msg}`);
     });
-    requestAnimationFrame(() => map.resize());
 
     return () => {
-      map.remove();
+      markerRef.current?.remove();
       mapInstanceRef.current = null;
       markerRef.current = null;
     };
-  }, [mapOpen]);
+  };
 
   const handleSmartSearch = async () => {
-      if (!destinationInput.trim() || !supabase) return;
-      // AI features go through the gemini-proxy Edge Function (requires sign-in).
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
+      if (!destinationInput.trim()) return;
+      // Places lookups are proxied through the gemini-proxy Edge Function
+      // (requires sign-in) — see services/geocoding.ts.
+      if (!(await hasAiPlacesSession())) return;
 
       setIsSearching(true);
       setResolvedPlace(null);
 
       try {
-        const response = await geminiGenerate({
-            contents: `Find the specific location for: "${destinationInput}". If it's a generic term like "gas" or "coffee", find the nearest one. Provide the name and address.`,
-            config: {
-                tools: [{ googleMaps: {} }],
-                toolConfig: {
-                    retrievalConfig: {
-                        latLng: currentLocation ? { latitude: currentLocation.lat, longitude: currentLocation.lng } : undefined
-                    }
-                }
-            }
-        });
-
-        const text = responseText(response);
-        const chunks = responseChunks(response);
-
-        // Extract data from Grounding Chunks (Priority)
-        const mapChunk = chunks.find((c: any) => c.web?.uri && c.web?.title);
-
-        let placeName = destinationInput;
-        let placeUri = "";
-
-        if (mapChunk && mapChunk.web) {
-             placeName = mapChunk.web.title || placeName;
-             placeUri = mapChunk.web.uri || "";
-        } else {
-             // Fallback to text parsing if no chunks (unlikely with valid maps result)
-             placeName = text.split('\n')[0] || destinationInput;
-        }
-
+        const place = await resolvePlaceNear(
+          destinationInput,
+          currentLocation ? { lat: currentLocation.lat, lng: currentLocation.lng } : undefined
+        );
         setResolvedPlace({
-            name: placeName,
+            name: place.name,
             address: "Tap navigate for details", // Simplified for UI
-            uri: placeUri
+            uri: place.uri
         });
         setIsRouteActive(true);
 
@@ -251,7 +214,12 @@ export const CruiseMode: React.FC = () => {
         // above, which collapses to 0 on some mobile browsers and leaves
         // MapLibre rendering nothing.
         <div className="fixed inset-0 z-50 bg-gray-900">
-          <div ref={mapContainerRef} className="absolute inset-0" />
+          <MapCanvas
+            className="absolute inset-0"
+            center={currentLocation ? [currentLocation.lng, currentLocation.lat] : [-118.2437, 34.0522]}
+            zoom={16}
+            onReady={setupCruiseMap}
+          />
           <button
             onClick={() => setMapOpen(false)}
             className="absolute top-4 right-4 z-10 bg-octane-black/90 border border-white/10 rounded-full p-2 text-white hover:bg-octane-black transition-colors shadow-2xl"

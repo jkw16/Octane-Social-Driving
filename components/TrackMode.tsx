@@ -3,8 +3,9 @@ import { MapPin, Crosshair, Navigation, RefreshCw, PenTool, Undo, Trash2, Save, 
 import * as maplibregl from 'maplibre-gl';
 import { SessionResult } from '../types';
 import { supabase, isSupabaseConfigured } from '../supabase/client';
-import { geminiGenerate, responseText, responseChunks } from '../supabase/gemini';
-import { DARK_RASTER_STYLE } from '../services/mapStyle';
+import { hasAiPlacesSession, findNearestRaceTrack } from '../services/geocoding';
+import { MapCanvas, addGeoJsonSource, updateGeoJsonSource } from './map';
+import { createUserPuckMarker, createTrackMarker } from './map/markers';
 
 interface TrackGeofence { id: string; name: string; lat: number; lng: number; radius: number }
 interface WitnessPoint { lat: number; lng: number; ts: string }
@@ -47,7 +48,6 @@ export const TrackMode: React.FC = () => {
   // Creator Mode State
   const [isCreatorMode, setIsCreatorMode] = useState(false);
   const [routePoints, setRoutePoints] = useState<{lat: number, lng: number}[]>([]);
-  const creatorMapRef = useRef<HTMLDivElement>(null);
   const creatorMapInstance = useRef<maplibregl.Map | null>(null);
   const routeMarkersRef = useRef<maplibregl.Marker[]>([]);
 
@@ -175,40 +175,34 @@ export const TrackMode: React.FC = () => {
       }
   }, [userLocation, nearestTrack, isLoadingTrack, isCreatorMode]);
 
-  // Creator Mode Map Initialization
-  useEffect(() => {
-    if (!isCreatorMode || !creatorMapRef.current) return;
-
-    const startLat = userLocation?.lat || 34.0522;
-    const startLng = userLocation?.lng || -118.2437;
-
-    const map = new maplibregl.Map({
-      container: creatorMapRef.current,
-      style: DARK_RASTER_STYLE as any,
-      center: [startLng, startLat], // [lng, lat]
-      zoom: 15,
-    });
+  // Creator Mode Map — setup handed to MapCanvas, which mounts the map when
+  // the creator view renders and tears it down when it unmounts.
+  const setupCreatorMap = (map: maplibregl.Map) => {
     creatorMapInstance.current = map;
 
     // Add user marker if location available
     if (userLocation) {
-      const el = document.createElement('div');
-      el.style.cssText = 'background:#06b6d4;width:12px;height:12px;border-radius:50%;border:2px solid #fff;';
-      new maplibregl.Marker(el).setLngLat([userLocation.lng, userLocation.lat]).addTo(map);
+      createUserPuckMarker().setLngLat([userLocation.lng, userLocation.lat]).addTo(map);
     }
 
     // Route line source + layer (dashed cyan).
-    // addSource/addLayer before the style finishes loading THROWS in MapLibre 6
-    // ("Style is not done loading") — and an unhandled throw here unmounts the
-    // whole app (blank blue body). Same safety net as CruiseMode: guard on
-    // loaded(), fall back to 'load'.
-    const addRouteLayer = () => {
-      if (map.getSource('route')) return; // guard double-add
-      map.addSource('route', { type: 'geojson', data: { type: 'Feature', geometry: { type: 'LineString', coordinates: [] }, properties: {} } });
-      map.addLayer({ id: 'route', type: 'line', source: 'route', paint: { 'line-color': '#06b6d4', 'line-width': 4, 'line-opacity': 0.7, 'line-dasharray': [2, 2] } });
-    };
-    if (map.loaded() || map.isStyleLoaded()) addRouteLayer();
-    else map.on('load', addRouteLayer);
+    addGeoJsonSource(
+      map,
+      'route',
+      { type: 'Feature', geometry: { type: 'LineString', coordinates: [] }, properties: {} },
+      [
+        {
+          id: 'route',
+          type: 'line',
+          paint: {
+            'line-color': '#06b6d4',
+            'line-width': 4,
+            'line-opacity': 0.7,
+            'line-dasharray': [2, 2],
+          },
+        },
+      ]
+    );
 
     // Map tile/network errors are logged, never fatal — the creator UI and
     // tap-to-place still work even if the basemap can't load.
@@ -218,19 +212,12 @@ export const TrackMode: React.FC = () => {
       setRoutePoints(prev => [...prev, { lat: e.lngLat.lat, lng: e.lngLat.lng }]);
     });
 
-    // Mobile layout can settle a frame after mount; force a re-measure so the
-    // canvas always picks up the real container size (MapLibre renders nothing
-    // in a 0-height container).
-    map.on('load', () => map.resize());
-    requestAnimationFrame(() => map.resize());
-
     return () => {
-      map.remove();
       creatorMapInstance.current = null;
+      routeMarkersRef.current.forEach(m => m.remove());
       routeMarkersRef.current = [];
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isCreatorMode]);
+  };
 
   // Update Route Visuals
   useEffect(() => {
@@ -243,69 +230,34 @@ export const TrackMode: React.FC = () => {
 
     // Draw markers (DOM): start green, end red, mid cyan
     routePoints.forEach((point, index) => {
-      const isStart = index === 0;
-      const isEnd = index === routePoints.length - 1;
-      const color = isStart ? '#22c55e' : isEnd ? '#ef4444' : '#06b6d4';
-      const size = isStart || isEnd ? 16 : 10;
-      const el = document.createElement('div');
-      el.style.cssText = `background:${color};width:${size}px;height:${size}px;border-radius:50%;border:2px solid #fff;`;
-      const m = new maplibregl.Marker(el).setLngLat([point.lng, point.lat]).addTo(map);
+      const kind = index === 0 ? 'start' : index === routePoints.length - 1 ? 'finish' : 'checkpoint';
+      const m = createTrackMarker(kind).setLngLat([point.lng, point.lat]).addTo(map);
       routeMarkersRef.current.push(m);
     });
 
     // Update polyline
-    const src = map.getSource('route') as any;
-    if (src) {
-      src.setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: routePoints.map(p => [p.lng, p.lat]) }, properties: {} });
-    }
+    updateGeoJsonSource(map, 'route', {
+      type: 'Feature',
+      geometry: { type: 'LineString', coordinates: routePoints.map(p => [p.lng, p.lat]) },
+      properties: {},
+    });
   }, [routePoints]);
 
   const findNearestTrack = async (lat: number, lng: number) => {
-      if (!supabase) return;
-      // AI features go through the gemini-proxy Edge Function, which requires
-      // a signed-in session (JWT verification). Guests skip the nearest-circuit lookup.
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
+      // Places lookups are proxied through the gemini-proxy Edge Function,
+      // which requires a signed-in session (JWT verification). Guests skip the
+      // nearest-circuit lookup. See services/geocoding.ts.
+      if (!(await hasAiPlacesSession())) return;
       setIsLoadingTrack(true);
       try {
-          const response = await geminiGenerate({
-              contents: "Find the single nearest automotive race track — a real road course or racing circuit built for full-size automobiles (cars), not karts. Strictly EXCLUDE go-kart tracks, karting centers, family fun centers (like Bob-O's), amusement parks, and anything that is not an automotive road course or closed circuit for cars. Calculate the driving distance.",
-              config: {
-                  tools: [{ googleMaps: {} }],
-                  toolConfig: {
-                      retrievalConfig: {
-                          latLng: { latitude: lat, longitude: lng }
-                      }
-                  }
-              }
-          });
-
-          const chunks = responseChunks(response);
-          const text = responseText(response);
-
-          let trackName = "Unknown Circuit";
-          let trackUri = "";
-
-          const mapChunk = chunks?.find((c: any) => c.web?.title || c.web?.uri);
-
-          if (mapChunk && mapChunk.web) {
-              trackName = mapChunk.web.title || trackName;
-              trackUri = mapChunk.web.uri || "";
-          } else {
-              trackName = text.split(',')[0] || "Nearest Circuit";
-          }
-
-          const distanceMatch = text.match(/(\d+(\.\d+)?)\s*(miles|mi|km)/i);
-          const distanceDisplay = distanceMatch ? distanceMatch[0] : "Calculating...";
-
+          const track = await findNearestRaceTrack({ lat, lng });
           setNearestTrack({
-              name: trackName,
-              distance: distanceDisplay,
-              uri: trackUri
+              name: track.name,
+              distance: track.distance ?? "Calculating...",
+              uri: track.uri
           });
-
       } catch (e) {
-          console.error("Failed to find track via Google Maps:", e);
+          console.error("Failed to find track via geocoding:", e);
           setNearestTrack({
               name: "Nearest Circuit",
               distance: "Unknown",
@@ -420,7 +372,12 @@ export const TrackMode: React.FC = () => {
   if (isCreatorMode) {
       return (
           <div className="fixed inset-0 z-50 bg-gray-900">
-              <div ref={creatorMapRef} className="absolute inset-0 z-0" />
+              <MapCanvas
+                className="absolute inset-0 z-0"
+                center={[userLocation?.lng || -118.2437, userLocation?.lat || 34.0522]}
+                zoom={15}
+                onReady={setupCreatorMap}
+              />
 
               <div className="absolute top-[calc(env(safe-area-inset-top)_+_1rem)] left-4 right-4 z-10 flex justify-between items-start pointer-events-none">
                   <div className="bg-octane-black/80 backdrop-blur border border-white/10 p-3 rounded-xl pointer-events-auto shadow-lg">
