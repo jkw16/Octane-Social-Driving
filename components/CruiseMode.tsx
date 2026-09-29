@@ -1,6 +1,6 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as maplibregl from 'maplibre-gl';
-import { Navigation, Search, ArrowRight, X, Loader2, Map as MapIcon, ChevronRight } from 'lucide-react';
+import { Navigation, Search, ArrowRight, X, Loader2, Map as MapIcon } from 'lucide-react';
 import { MapCanvas, addGeoJsonSource, updateGeoJsonSource } from './map';
 import { createCarPuckMarker, setCarPuckHeading } from './map/markers';
 import { resolvePlaceNear, hasAiPlacesSession } from '../services/geocoding';
@@ -46,8 +46,6 @@ export const CruiseMode: React.FC = () => {
   const [heading, setHeading] = useState(0);
   const [currentLocation, setCurrentLocation] = useState<{lat: number, lng: number} | null>(null);
 
-  // Full-screen map toggle. Default to the menu (cards); map mounts on demand.
-  const [mapOpen, setMapOpen] = useState(false);
   // In-page map diagnostics — surfaces MapLibre load/error events as text so a
   // blank map can be diagnosed without browser dev tools.
   const [mapStatus, setMapStatus] = useState<string>('Initializing…');
@@ -63,8 +61,8 @@ export const CruiseMode: React.FC = () => {
       uri?: string;
   } | null>(null);
 
-  // GPS tracking — always running so the speed card works in the menu,
-  // and so the map can center on the user the moment it opens.
+  // GPS tracking — always running so the speed card reads live speed, and so
+  // the map centers on the user the moment it mounts.
   useEffect(() => {
     const watchId = navigator.geolocation.watchPosition(
       (pos) => {
@@ -99,8 +97,9 @@ export const CruiseMode: React.FC = () => {
     return () => navigator.geolocation.clearWatch(watchId);
   }, []);
 
-  // Map — only mounted when the user opens it full-screen. All construction
-  // and cleanup lives in MapCanvas; this wires up the cruise-specific bits:
+  // Map — mounts as soon as the Cruise tab is shown (no intermediate menu).
+  // All construction and cleanup lives in MapCanvas; this wires up the
+  // cruise-specific bits:
   // user marker, 500-ft range circle and the in-page load diagnostics.
   const setupCruiseMap = (map: maplibregl.Map) => {
     const center: [number, number] = currentLocation
@@ -209,45 +208,34 @@ export const CruiseMode: React.FC = () => {
   };
 
   return (
-    <div className="h-full w-full relative bg-gray-900 overflow-hidden flex flex-col">
-      {mapOpen ? (
-        // Fixed full-screen overlay: the map container gets real viewport
-        // pixels (100vw x 100vh) independent of the flex/percentage-height chain
-        // above, which collapses to 0 on some mobile browsers and leaves
-        // MapLibre rendering nothing.
-        <div className="fixed inset-0 z-50 bg-gray-900">
-          <MapCanvas
-            className="absolute inset-0"
-            center={currentLocation ? [currentLocation.lng, currentLocation.lat] : [-118.2437, 34.0522]}
-            zoom={16}
-            onReady={setupCruiseMap}
-          />
-          <button
-            onClick={() => setMapOpen(false)}
-            className="absolute top-safe-4 right-4 z-10 bg-octane-black/90 border border-white/10 rounded-full p-2 text-white hover:bg-octane-black transition-colors shadow-2xl"
-            aria-label="Close map"
-          >
-            <X className="w-5 h-5" />
-          </button>
-          {/* In-page diagnostics — read this text to diagnose a blank map. */}
-          <div className="absolute top-safe-4 left-4 z-10 max-w-[80%] bg-octane-black/90 border border-white/10 rounded-lg px-3 py-2 text-[11px] font-mono text-white shadow-2xl pointer-events-none">
-            map: {mapStatus}
-          </div>
-        </div>
-      ) : (
-        /* Menu — three cards: search, open map, speed */
-        <div className="relative z-10 h-full w-full p-4 pb-24 flex flex-col gap-4 overflow-y-auto">
-          {/* Card 1 — Location search / destination */}
-          {!isRouteActive ? (
-            <div className="bg-octane-black/90 p-2 rounded-xl border border-white/10 backdrop-blur-md shadow-2xl">
-              <div className="flex items-center gap-2 px-2">
-                <Search className={`w-5 h-5 ${isSearching ? 'text-octane-accent animate-pulse' : 'text-gray-400'}`} />
+    <div className="h-full w-full relative bg-gray-900 overflow-hidden">
+      {/* Fixed full-screen overlay: the map container gets real viewport
+          pixels (100vw x 100vh) independent of the flex/percentage-height chain
+          above, which collapses to 0 on some mobile browsers and leaves
+          MapLibre rendering nothing. The map IS the tab — no menu page. */}
+      <div className="fixed inset-0 z-50 bg-gray-900">
+        <MapCanvas
+          className="absolute inset-0"
+          center={currentLocation ? [currentLocation.lng, currentLocation.lat] : [-118.2437, 34.0522]}
+          zoom={16}
+          onReady={setupCruiseMap}
+        />
+
+        {/* HUD overlay — pointer-events-none on the wrapper so map gestures
+            (pan/pinch) pass through; each interactive element re-enables. */}
+        <div className="absolute inset-0 z-10 flex flex-col pointer-events-none">
+          {/* Search — floats at the top, top-safe-4 clears the notch/status
+              bar on iPhone (see index.css). */}
+          <div className="top-safe-4 absolute left-4 right-4 flex flex-col gap-2 items-start">
+            <div className="pointer-events-auto w-full bg-octane-black/90 rounded-full border border-white/10 backdrop-blur-md shadow-2xl">
+              <div className="flex items-center gap-2 px-4 py-2.5">
+                <Search className={`w-4 h-4 shrink-0 ${isSearching ? 'text-octane-accent animate-pulse' : 'text-gray-400'}`} />
                 <input
                   type="text"
                   value={destinationInput}
                   onChange={(e) => setDestinationInput(e.target.value)}
                   placeholder="Search places (e.g. Shell, Cafe)..."
-                  className="flex-1 bg-transparent border-none text-white focus:outline-none py-3 text-sm font-medium placeholder-gray-500"
+                  className="flex-1 min-w-0 bg-transparent border-none text-white focus:outline-none py-1 text-sm font-medium placeholder-gray-500"
                   onKeyDown={(e) => e.key === 'Enter' && handleSmartSearch()}
                   disabled={isSearching}
                 />
@@ -255,78 +243,61 @@ export const CruiseMode: React.FC = () => {
                   <button
                     onClick={handleSmartSearch}
                     disabled={isSearching}
-                    className="bg-octane-accent text-black p-2 rounded-lg font-bold disabled:opacity-50"
+                    className="bg-octane-accent text-black p-1.5 rounded-full font-bold disabled:opacity-50 shrink-0"
                   >
                     {isSearching ? <Loader2 className="w-4 h-4 animate-spin" /> : <ArrowRight className="w-4 h-4" />}
                   </button>
                 )}
               </div>
             </div>
-          ) : (
-            <div className="bg-octane-dark/95 p-4 rounded-xl border border-octane-accent/30 backdrop-blur-md shadow-2xl animate-in slide-in-from-top-2">
-              <div className="flex justify-between items-start mb-4">
-                <div className="flex-1">
-                  <div className="text-[10px] text-gray-400 uppercase font-bold tracking-wider mb-1 flex items-center gap-1">
-                    <MapIcon className="w-3 h-3 text-octane-accent" /> Destination Set
+            {/* In-page diagnostics — read this text to diagnose a blank map. */}
+            <div className="bg-octane-black/70 rounded-full px-3 py-1 text-[10px] font-mono text-gray-400 shadow-lg">
+              map: {mapStatus}
+            </div>
+          </div>
+
+          {/* Bottom dock — destination card (when set) above the speed card.
+              The rem offset clears the fixed tab bar (pb-28 convention in
+              index.css); the env() term clears the home indicator. */}
+          <div className="absolute left-4 right-4 bottom-[calc(env(safe-area-inset-bottom)_+7rem)] flex flex-col gap-3">
+            {isRouteActive && (
+              <div className="pointer-events-auto bg-octane-dark/95 p-4 rounded-xl border border-octane-accent/30 backdrop-blur-md shadow-2xl animate-in slide-in-from-bottom-2">
+                <div className="flex justify-between items-start mb-3">
+                  <div className="flex-1">
+                    <div className="text-[10px] text-gray-400 uppercase font-bold tracking-wider mb-1 flex items-center gap-1">
+                      <MapIcon className="w-3 h-3 text-octane-accent" /> Destination Set
+                    </div>
+                    <h3 className="text-lg font-bold text-white leading-tight pr-4 line-clamp-2">{resolvedPlace?.name || destinationInput}</h3>
+                    <p className="text-xs text-gray-500 mt-1 line-clamp-1">{resolvedPlace?.address}</p>
                   </div>
-                  <h3 className="text-xl font-bold text-white leading-tight pr-4">{resolvedPlace?.name || destinationInput}</h3>
-                  <p className="text-xs text-gray-500 mt-1 line-clamp-1">{resolvedPlace?.address}</p>
+                  <button onClick={() => { setIsRouteActive(false); setDestinationInput(''); setResolvedPlace(null); }} className="text-gray-400 hover:text-white p-1">
+                    <X className="w-5 h-5" />
+                  </button>
                 </div>
-                <button onClick={() => { setIsRouteActive(false); setDestinationInput(''); setResolvedPlace(null); }} className="text-gray-400 hover:text-white p-1">
-                  <X className="w-5 h-5" />
+
+                <button
+                  onClick={handleStartNavigation}
+                  className="w-full bg-blue-600 hover:bg-blue-500 text-white py-3 rounded-lg font-bold flex items-center justify-center gap-2 transition-colors"
+                >
+                  <Navigation className="w-4 h-4 fill-current" />
+                  Start Navigation
                 </button>
               </div>
+            )}
 
-              <div className="grid grid-cols-2 gap-2 mb-4">
-                <div className="bg-white/5 rounded-lg p-2 border border-white/5">
-                  <div className="text-[10px] text-gray-500">Routing</div>
-                  <div className="text-white font-mono font-bold text-xs">Google Maps</div>
-                </div>
-                <div className="bg-white/5 rounded-lg p-2 border border-white/5">
-                  <div className="text-[10px] text-gray-500">Status</div>
-                  <div className="text-octane-success font-mono font-bold text-xs">Ready</div>
-                </div>
-              </div>
-
-              <button
-                onClick={handleStartNavigation}
-                className="w-full bg-blue-600 hover:bg-blue-500 text-white py-3 rounded-lg font-bold flex items-center justify-center gap-2 transition-colors"
-              >
-                <Navigation className="w-4 h-4 fill-current" />
-                Start Navigation
-              </button>
-            </div>
-          )}
-
-          {/* Card 2 — Open full-screen map */}
-          <button
-            onClick={() => { setMapStatus('Initializing…'); setMapOpen(true); }}
-            className="bg-octane-black/90 p-4 rounded-xl border border-white/10 backdrop-blur-md shadow-2xl flex items-center justify-between text-left transition-colors hover:border-octane-accent/40"
-          >
-            <div className="flex items-center gap-3">
-              <div className="w-10 h-10 rounded-lg bg-octane-accent/10 flex items-center justify-center">
-                <MapIcon className="w-5 h-5 text-octane-accent" />
+            {/* Speed card — lives just above the tab bar, like the old menu. */}
+            <div className="pointer-events-auto bg-octane-black/80 backdrop-blur p-4 rounded-2xl border border-white/5 flex justify-between items-center shadow-2xl">
+              <div>
+                <div className="text-[10px] text-gray-500 uppercase">Current Speed</div>
+                <div className="text-2xl font-display font-black text-white">{speed} <span className="text-sm text-gray-500 font-sans">MPH</span></div>
               </div>
               <div>
-                <div className="text-white font-bold text-sm">Live Map</div>
-                <div className="text-gray-500 text-xs">Open full-screen map view</div>
+                <Navigation className="w-8 h-8 text-gray-600" style={{ transform: `rotate(${heading}deg)` }} />
               </div>
-            </div>
-            <ChevronRight className="w-5 h-5 text-gray-500" />
-          </button>
-
-          {/* Card 3 — Speed (pinned to bottom) */}
-          <div className="mt-auto bg-octane-black/80 backdrop-blur p-4 rounded-2xl border border-white/5 flex justify-between items-center">
-            <div>
-              <div className="text-[10px] text-gray-500 uppercase">Current Speed</div>
-              <div className="text-2xl font-display font-black text-white">{speed} <span className="text-sm text-gray-500 font-sans">MPH</span></div>
-            </div>
-            <div>
-              <Navigation className="w-8 h-8 text-gray-600" style={{ transform: `rotate(${heading}deg)` }} />
             </div>
           </div>
         </div>
-      )}
+      </div>
     </div>
   );
 };
