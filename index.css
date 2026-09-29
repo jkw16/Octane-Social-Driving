@@ -75,6 +75,24 @@ html, body {
   -webkit-overflow-scrolling: touch; /* legacy momentum hint for older iOS */
   overscroll-behavior: contain;
 }
+
+/* --- iOS standalone viewport-gap fix (tab bar must sit on the physical
+   bottom edge) -------------------------------------------------------
+   In home-screen web apps WebKit reports the layout viewport ~62pt short
+   of the real screen (WebKit bug 254868 family — innerHeight/100dvh
+   under-report while the visual screen is full height), which floats the
+   tab bar above the bottom edge and leaves a dead strip below it.
+   App.tsx measures screen.height - innerHeight and, when positive in
+   standalone, sets --viewport-gap and adds this class. The bar then
+   anchors to the TRUE bottom, and the body is painted the bar color so
+   no seam can appear in the home-indicator zone. Browser-mode Safari is
+   untouched (gap check is gated on standalone). */
+:root.standalone-fix body {
+  background: rgb(30 41 59); /* octane-dark — matches the 90% bar above */
+}
+:root.standalone-fix nav.tab-bar {
+  bottom: calc(-1 * var(--viewport-gap, 0px));
+}
 .pl-safe { padding-left: env(safe-area-inset-left); }
 .pr-safe { padding-right: env(safe-area-inset-right); }
 

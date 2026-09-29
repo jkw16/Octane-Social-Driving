@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { LayoutDashboard, Map, Gauge, Flag, MessagesSquare, Mic } from 'lucide-react';
 import { AppMode, UserProfile, Meetup } from './types';
 import { Dashboard } from './components/Dashboard';
@@ -30,6 +30,37 @@ export default function App() {
   // out (or before Supabase is configured), we fall back to a local guest
   // profile persisted via secure storage so the app still works offline.
   const auth = useAuth();
+
+  // iOS home-screen web app: WebKit under-fills the layout viewport by the
+  // phantom bottom-toolbar height (bug 254868 family — innerHeight/100dvh
+  // are short in standalone on iOS 26), which floats the tab bar above the
+  // physical bottom edge. Measure the lie and push the bar down onto the
+  // real screen bottom; see index.css "standalone viewport-gap fix".
+  useEffect(() => {
+    const standalone =
+      window.matchMedia('(display-mode: standalone)').matches ||
+      (navigator as any).standalone === true;
+    if (!standalone) return;
+    const apply = () => {
+      const gap = Math.round((screen as Screen).height - window.innerHeight);
+      if (gap > 8) {
+        document.documentElement.style.setProperty('--viewport-gap', `${gap}px`);
+        document.documentElement.classList.add('standalone-fix');
+      } else {
+        document.documentElement.classList.remove('standalone-fix');
+      }
+    };
+    apply();
+    window.addEventListener('resize', apply);
+    window.addEventListener('focus', apply);
+    document.addEventListener('visibilitychange', apply);
+    return () => {
+      window.removeEventListener('resize', apply);
+      window.removeEventListener('focus', apply);
+      document.removeEventListener('visibilitychange', apply);
+      document.documentElement.classList.remove('standalone-fix');
+    };
+  }, []);
   const [localUser, setLocalUser] = usePersistentState<UserProfile>('octane:user', DEFAULT_USER);
   const user: UserProfile = auth.profile
     ? { ...localUser, ...auth.profile, isSignedIn: true }
@@ -126,7 +157,7 @@ export default function App() {
 
       {/* Persistent Navigation */}
       {mode !== AppMode.PROFILE && (
-        <nav className="fixed bottom-0 left-0 right-0 bg-octane-dark/90 backdrop-blur-lg border-t border-white/5 pb-safe z-50">
+        <nav className="tab-bar fixed bottom-0 left-0 right-0 bg-octane-dark/90 backdrop-blur-lg border-t border-white/5 pb-safe z-50">
           <div className="flex justify-around items-center p-2">
             <NavButton 
               active={mode === AppMode.DASHBOARD} 
