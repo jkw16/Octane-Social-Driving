@@ -5,6 +5,7 @@ import { SessionResult } from '../types';
 import { supabase, isSupabaseConfigured } from '../supabase/client';
 import { geminiGenerate, responseText, responseChunks } from '../supabase/gemini';
 import { MapCanvas, addGeoJsonSource, updateGeoJsonSource } from './map';
+import { createUserPuckMarker, createTrackMarker } from './map/markers';
 
 interface TrackGeofence { id: string; name: string; lat: number; lng: number; radius: number }
 interface WitnessPoint { lat: number; lng: number; ts: string }
@@ -181,9 +182,7 @@ export const TrackMode: React.FC = () => {
 
     // Add user marker if location available
     if (userLocation) {
-      const el = document.createElement('div');
-      el.style.cssText = 'background:#06b6d4;width:12px;height:12px;border-radius:50%;border:2px solid #fff;';
-      new maplibregl.Marker(el).setLngLat([userLocation.lng, userLocation.lat]).addTo(map);
+      createUserPuckMarker().setLngLat([userLocation.lng, userLocation.lat]).addTo(map);
     }
 
     // Route line source + layer (dashed cyan).
@@ -231,13 +230,8 @@ export const TrackMode: React.FC = () => {
 
     // Draw markers (DOM): start green, end red, mid cyan
     routePoints.forEach((point, index) => {
-      const isStart = index === 0;
-      const isEnd = index === routePoints.length - 1;
-      const color = isStart ? '#22c55e' : isEnd ? '#ef4444' : '#06b6d4';
-      const size = isStart || isEnd ? 16 : 10;
-      const el = document.createElement('div');
-      el.style.cssText = `background:${color};width:${size}px;height:${size}px;border-radius:50%;border:2px solid #fff;`;
-      const m = new maplibregl.Marker(el).setLngLat([point.lng, point.lat]).addTo(map);
+      const kind = index === 0 ? 'start' : index === routePoints.length - 1 ? 'finish' : 'checkpoint';
+      const m = createTrackMarker(kind).setLngLat([point.lng, point.lat]).addTo(map);
       routeMarkersRef.current.push(m);
     });
 

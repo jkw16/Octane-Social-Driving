@@ -4,6 +4,7 @@ import { Navigation, Search, ArrowRight, X, Loader2, Map as MapIcon, ChevronRigh
 import { supabase } from '../supabase/client';
 import { geminiGenerate, responseText, responseChunks } from '../supabase/gemini';
 import { MapCanvas, addGeoJsonSource, updateGeoJsonSource } from './map';
+import { createUserPuckMarker } from './map/markers';
 
 // Build a GeoJSON Polygon approximating a geographic circle of `radiusMeters`
 // around [lng, lat] using the destination-point formula (haversine-based).
@@ -100,10 +101,8 @@ export const CruiseMode: React.FC = () => {
 
     mapInstanceRef.current = map;
 
-    // User marker (cyan dot).
-    const el = document.createElement('div');
-    el.style.cssText = 'background:#06b6d4;width:16px;height:16px;border-radius:50%;border:3px solid #fff;box-shadow:0 0 15px #06b6d4;';
-    const marker = new maplibregl.Marker(el).setLngLat(center).addTo(map);
+    // User marker (glowing cyan puck).
+    const marker = createUserPuckMarker().setLngLat(center).addTo(map);
     markerRef.current = marker;
 
     // 500-ft proxy-chat range circle — light-blue transparent fill around the
