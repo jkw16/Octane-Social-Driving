@@ -4,7 +4,7 @@ import * as maplibregl from 'maplibre-gl';
 import { SessionResult } from '../types';
 import { supabase, isSupabaseConfigured } from '../supabase/client';
 import { geminiGenerate, responseText, responseChunks } from '../supabase/gemini';
-import { DARK_RASTER_STYLE } from '../services/mapStyle';
+import { MapCanvas, addGeoJsonSource, updateGeoJsonSource } from './map';
 
 interface TrackGeofence { id: string; name: string; lat: number; lng: number; radius: number }
 interface WitnessPoint { lat: number; lng: number; ts: string }
@@ -47,7 +47,6 @@ export const TrackMode: React.FC = () => {
   // Creator Mode State
   const [isCreatorMode, setIsCreatorMode] = useState(false);
   const [routePoints, setRoutePoints] = useState<{lat: number, lng: number}[]>([]);
-  const creatorMapRef = useRef<HTMLDivElement>(null);
   const creatorMapInstance = useRef<maplibregl.Map | null>(null);
   const routeMarkersRef = useRef<maplibregl.Marker[]>([]);
 
@@ -175,19 +174,9 @@ export const TrackMode: React.FC = () => {
       }
   }, [userLocation, nearestTrack, isLoadingTrack, isCreatorMode]);
 
-  // Creator Mode Map Initialization
-  useEffect(() => {
-    if (!isCreatorMode || !creatorMapRef.current) return;
-
-    const startLat = userLocation?.lat || 34.0522;
-    const startLng = userLocation?.lng || -118.2437;
-
-    const map = new maplibregl.Map({
-      container: creatorMapRef.current,
-      style: DARK_RASTER_STYLE as any,
-      center: [startLng, startLat], // [lng, lat]
-      zoom: 15,
-    });
+  // Creator Mode Map — setup handed to MapCanvas, which mounts the map when
+  // the creator view renders and tears it down when it unmounts.
+  const setupCreatorMap = (map: maplibregl.Map) => {
     creatorMapInstance.current = map;
 
     // Add user marker if location available
@@ -198,17 +187,23 @@ export const TrackMode: React.FC = () => {
     }
 
     // Route line source + layer (dashed cyan).
-    // addSource/addLayer before the style finishes loading THROWS in MapLibre 6
-    // ("Style is not done loading") — and an unhandled throw here unmounts the
-    // whole app (blank blue body). Same safety net as CruiseMode: guard on
-    // loaded(), fall back to 'load'.
-    const addRouteLayer = () => {
-      if (map.getSource('route')) return; // guard double-add
-      map.addSource('route', { type: 'geojson', data: { type: 'Feature', geometry: { type: 'LineString', coordinates: [] }, properties: {} } });
-      map.addLayer({ id: 'route', type: 'line', source: 'route', paint: { 'line-color': '#06b6d4', 'line-width': 4, 'line-opacity': 0.7, 'line-dasharray': [2, 2] } });
-    };
-    if (map.loaded() || map.isStyleLoaded()) addRouteLayer();
-    else map.on('load', addRouteLayer);
+    addGeoJsonSource(
+      map,
+      'route',
+      { type: 'Feature', geometry: { type: 'LineString', coordinates: [] }, properties: {} },
+      [
+        {
+          id: 'route',
+          type: 'line',
+          paint: {
+            'line-color': '#06b6d4',
+            'line-width': 4,
+            'line-opacity': 0.7,
+            'line-dasharray': [2, 2],
+          },
+        },
+      ]
+    );
 
     // Map tile/network errors are logged, never fatal — the creator UI and
     // tap-to-place still work even if the basemap can't load.
@@ -218,19 +213,12 @@ export const TrackMode: React.FC = () => {
       setRoutePoints(prev => [...prev, { lat: e.lngLat.lat, lng: e.lngLat.lng }]);
     });
 
-    // Mobile layout can settle a frame after mount; force a re-measure so the
-    // canvas always picks up the real container size (MapLibre renders nothing
-    // in a 0-height container).
-    map.on('load', () => map.resize());
-    requestAnimationFrame(() => map.resize());
-
     return () => {
-      map.remove();
       creatorMapInstance.current = null;
+      routeMarkersRef.current.forEach(m => m.remove());
       routeMarkersRef.current = [];
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isCreatorMode]);
+  };
 
   // Update Route Visuals
   useEffect(() => {
@@ -254,10 +242,11 @@ export const TrackMode: React.FC = () => {
     });
 
     // Update polyline
-    const src = map.getSource('route') as any;
-    if (src) {
-      src.setData({ type: 'Feature', geometry: { type: 'LineString', coordinates: routePoints.map(p => [p.lng, p.lat]) }, properties: {} });
-    }
+    updateGeoJsonSource(map, 'route', {
+      type: 'Feature',
+      geometry: { type: 'LineString', coordinates: routePoints.map(p => [p.lng, p.lat]) },
+      properties: {},
+    });
   }, [routePoints]);
 
   const findNearestTrack = async (lat: number, lng: number) => {
@@ -420,7 +409,12 @@ export const TrackMode: React.FC = () => {
   if (isCreatorMode) {
       return (
           <div className="fixed inset-0 z-50 bg-gray-900">
-              <div ref={creatorMapRef} className="absolute inset-0 z-0" />
+              <MapCanvas
+                className="absolute inset-0 z-0"
+                center={[userLocation?.lng || -118.2437, userLocation?.lat || 34.0522]}
+                zoom={15}
+                onReady={setupCreatorMap}
+              />
 
               <div className="absolute top-[calc(env(safe-area-inset-top)_+_1rem)] left-4 right-4 z-10 flex justify-between items-start pointer-events-none">
                   <div className="bg-octane-black/80 backdrop-blur border border-white/10 p-3 rounded-xl pointer-events-auto shadow-lg">
