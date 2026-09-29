@@ -1,4 +1,4 @@
-import React, { useState, useRef } from 'react';
+import React, { useState } from 'react';
 import { LayoutDashboard, Map, Gauge, Flag, MessagesSquare, Mic } from 'lucide-react';
 import { AppMode, UserProfile, Meetup } from './types';
 import { Dashboard } from './components/Dashboard';
@@ -12,17 +12,6 @@ import { VoiceChat } from './components/VoiceChat';
 import { usePersistentState } from './usePersistentState';
 import { useAuth } from './hooks/useAuth';
 
-// Left-to-right order of the bottom-nav tabs. Swiping left/right moves to the
-// adjacent tab in this list (with wrap-around). PROFILE is excluded (full-screen
-// edit view, no nav bar).
-const NAV_ORDER: AppMode[] = [
-  AppMode.DASHBOARD,
-  AppMode.GROUPS,
-  AppMode.CRUISE,
-  AppMode.LEADERBOARD,
-  AppMode.TRACK,
-  AppMode.VOICE,
-];
 
 // Default guest profile. The handle is randomized per-browser so two people
 // signing up fresh don't both grab the same default handle and hit the
@@ -114,29 +103,6 @@ export default function App() {
     setPastEvents((prev) => prev.filter((e) => e.id !== eventId));
   };
 
-  // --- Swipe left/right to move between nav tabs ---
-  const touchStart = useRef<{ x: number; y: number } | null>(null);
-
-  const onTouchStart = (e: React.TouchEvent) => {
-    const t = e.changedTouches[0];
-    touchStart.current = { x: t.clientX, y: t.clientY };
-  };
-
-  const onTouchEnd = (e: React.TouchEvent) => {
-    const start = touchStart.current;
-    touchStart.current = null;
-    if (!start) return;
-    const t = e.changedTouches[0];
-    const dx = t.clientX - start.x;
-    const dy = t.clientY - start.y;
-    // Only horizontal swipes: enough distance and clearly more horizontal than
-    // vertical, so ordinary vertical scrolling never triggers tab navigation.
-    if (Math.abs(dx) < 60 || Math.abs(dx) < Math.abs(dy) * 2) return;
-    const idx = NAV_ORDER.indexOf(mode);
-    if (idx === -1) return; // PROFILE (not in NAV_ORDER) — no swipe nav.
-    const next = (idx + (dx < 0 ? 1 : -1) + NAV_ORDER.length) % NAV_ORDER.length;
-    setMode(NAV_ORDER[next]);
-  };
 
   return (
     /* Scroll fix: .app-shell gives a definite 100dvh height (was
@@ -147,7 +113,7 @@ export default function App() {
     <div className="app-shell bg-octane-black font-sans text-slate-50 overflow-hidden flex flex-col">
 
       {/* Main Content Area */}
-      <main className="app-scroll flex-1 min-h-0 overflow-y-auto overscroll-contain relative pt-safe" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
+      <main className="app-scroll flex-1 min-h-0 overflow-y-auto overscroll-contain relative pt-safe">
         {mode === AppMode.DASHBOARD && <Dashboard user={user} onProfileClick={() => setMode(AppMode.PROFILE)} currentEvents={currentEvents} onToggleJoin={handleToggleJoin} onHostEvent={handleHostEvent} hostedEvents={currentEvents.filter((e) => e.isHost)} onUpdateEvent={handleUpdateEvent} onRemoveEvent={handleRemoveEvent} pastEvents={pastEvents} onEndEvent={handleEndEvent} onRestoreEvent={handleRestoreEvent} onDeletePast={handleDeletePast} />}
         {mode === AppMode.TRACK && <TrackMode />}
         {mode === AppMode.MEETUPS && <Meetups currentEvents={currentEvents} onHostEvent={handleHostEvent} />}
