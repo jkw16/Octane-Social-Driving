@@ -139,10 +139,15 @@ export default function App() {
   };
 
   return (
-    <div className="bg-octane-black min-h-screen font-sans text-slate-50 overflow-hidden flex flex-col">
+    /* Scroll fix: .app-shell gives a definite 100dvh height (was
+       min-h-screen → indefinite flex height, which made <main>'s
+       overflow-y-auto ambiguous and let the WKWebView's native
+       document scroll layer take over — the iOS rubber-band
+       snap-back-to-top. See index.css "iOS WKWebView scroll fix". */
+    <div className="app-shell bg-octane-black font-sans text-slate-50 overflow-hidden flex flex-col">
 
       {/* Main Content Area */}
-      <main className="flex-1 overflow-y-auto relative pt-safe" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
+      <main className="app-scroll flex-1 min-h-0 overflow-y-auto overscroll-contain relative pt-safe" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
         {mode === AppMode.DASHBOARD && <Dashboard user={user} onProfileClick={() => setMode(AppMode.PROFILE)} currentEvents={currentEvents} onToggleJoin={handleToggleJoin} onHostEvent={handleHostEvent} hostedEvents={currentEvents.filter((e) => e.isHost)} onUpdateEvent={handleUpdateEvent} onRemoveEvent={handleRemoveEvent} pastEvents={pastEvents} onEndEvent={handleEndEvent} onRestoreEvent={handleRestoreEvent} onDeletePast={handleDeletePast} />}
         {mode === AppMode.TRACK && <TrackMode />}
         {mode === AppMode.MEETUPS && <Meetups currentEvents={currentEvents} onHostEvent={handleHostEvent} />}

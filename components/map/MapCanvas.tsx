@@ -1,6 +1,10 @@
 import React, { useEffect, useRef } from 'react';
 import * as maplibregl from 'maplibre-gl';
 import { getOctaneStyle, DARK_RASTER_STYLE } from '../../services/mapStyle';
+// Side-effect module: must be imported BEFORE any maplibregl.Map is
+// constructed so the tile worker URL points at our own-origin copy. See the
+// header comment in the module for why this is needed under the Vite build.
+import './workerUrl';
 
 export type MapStyleSpec = maplibregl.StyleSpecification | Record<string, unknown> | string;
 

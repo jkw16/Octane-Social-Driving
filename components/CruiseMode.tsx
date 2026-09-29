@@ -140,9 +140,11 @@ export const CruiseMode: React.FC = () => {
     map.on('load', () => { setMapStatus(`Style loaded — ${tilesLoaded} tiles`); });
     map.on('style.load', () => setMapStatus('Style loaded — fetching tiles…'));
     // Count tiles as they arrive so we get positive confirmation the basemap is
-    // actually loading (vs. silently blocked).
+    // actually loading (vs. silently blocked). MapLibre 6's sourcedata events
+    // for tile loads carry a tile ref but NOT sourceDataType 'tiles' — match on
+    // isSourceLoaded + tile presence instead.
     map.on('sourcedata', (e: any) => {
-      if (e?.isSourceLoaded && e?.sourceDataType === 'tiles' && e?.tile) {
+      if (e?.isSourceLoaded && e?.tile) {
         tilesLoaded += 1;
         setMapStatus(`Loaded ${tilesLoaded} tiles`);
       }
@@ -222,13 +224,13 @@ export const CruiseMode: React.FC = () => {
           />
           <button
             onClick={() => setMapOpen(false)}
-            className="absolute top-4 right-4 z-10 bg-octane-black/90 border border-white/10 rounded-full p-2 text-white hover:bg-octane-black transition-colors shadow-2xl"
+            className="absolute top-safe-4 right-4 z-10 bg-octane-black/90 border border-white/10 rounded-full p-2 text-white hover:bg-octane-black transition-colors shadow-2xl"
             aria-label="Close map"
           >
             <X className="w-5 h-5" />
           </button>
           {/* In-page diagnostics — read this text to diagnose a blank map. */}
-          <div className="absolute top-4 left-4 z-10 max-w-[80%] bg-octane-black/90 border border-white/10 rounded-lg px-3 py-2 text-[11px] font-mono text-white shadow-2xl pointer-events-none">
+          <div className="absolute top-safe-4 left-4 z-10 max-w-[80%] bg-octane-black/90 border border-white/10 rounded-lg px-3 py-2 text-[11px] font-mono text-white shadow-2xl pointer-events-none">
             map: {mapStatus}
           </div>
         </div>

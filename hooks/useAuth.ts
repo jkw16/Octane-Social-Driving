@@ -21,6 +21,11 @@ export interface AuthState {
   signUp: (email: string, password: string, handle: string, car: string, avatar: string) => Promise<{ error: string | null; needsConfirmation: boolean }>;
   signOut: () => Promise<void>;
   updateProfile: (patch: Pick<UserProfile, 'username' | 'car' | 'avatar'>) => Promise<{ error: string | null }>;
+  // --- Account recovery (AuthRecovery flow) --------------------------------
+  requestPasswordReset: (email: string) => Promise<{ error: string | null }>;
+  verifyOtpCode: (email: string, token: string, type: 'recovery' | 'email') => Promise<{ error: string | null }>;
+  requestSignInCode: (email: string) => Promise<{ error: string | null }>;
+  updatePassword: (newPassword: string) => Promise<{ error: string | null }>;
 }
 
 const fetchProfile = async (userId: string): Promise<CloudProfile | null> => {
@@ -123,6 +128,58 @@ export const useAuth = (): AuthState => {
     return { error: error?.message ?? null };
   }, [session]);
 
+  // --- Account recovery -----------------------------------------------------
+  // Both flows are code-first (no redirect): the iOS build has no custom URL
+  // scheme in Info.plist, so a Supabase magic/reset link can only open in
+  // Safari — the resulting session can never land back inside the app WebView.
+  // 6-digit codes ({{ .Token }} in the email templates) do not require any
+  // redirect: the user just types the code in the app. resetPasswordForEmail /
+  // signInWithOtp both still send the link too, so web-PWA users can follow
+  // the link if their host supports it.
+
+  // Sends the Supabase "Reset Password" email. We deliberately omit
+  // `redirectTo` because no return-URL scheme is registered; the user verifies
+  // with the recovery code instead (verifyOtpCode type 'recovery').
+  const requestPasswordReset = useCallback(async (email: string) => {
+    if (!supabase) return { error: 'Cloud sync is not configured.' };
+    const { error } = await supabase.auth.resetPasswordForEmail(email);
+    return { error: error?.message ?? null };
+  }, []);
+
+  // Verifies a 6-digit code. type='recovery' is from the reset-password email
+  // (establishes a session so a new password can be set); type='email' is from
+  // the magic-link/sign-in-code email (signs the user in, recovering the case
+  // where they forgot both username and password).
+  const verifyOtpCode = useCallback(async (email: string, token: string, type: 'recovery' | 'email') => {
+    if (!supabase) return { error: 'Cloud sync is not configured.' };
+    const { data, error } = await supabase.auth.verifyOtp({ email, token: token.trim(), type });
+    if (error) return { error: error.message };
+    return { error: null, hasSession: !!data.session };
+  }, []);
+
+  // Sends the Supabase "Magic Link" email, which contains both the sign-in
+  // link and the OTP code the default template prints. shouldCreateUser:false
+  // keeps email-only probing from silently creating new accounts.
+  const requestSignInCode = useCallback(async (email: string) => {
+    if (!supabase) return { error: 'Cloud sync is not configured.' };
+    const { error } = await supabase.auth.signInWithOtp({
+      email,
+      options: { shouldCreateUser: false },
+    });
+    return { error: error?.message ?? null };
+  }, []);
+
+  // Sets a new password on the currently-authenticated user. Called after the
+  // recovery code was verified (that verification itself grants the session),
+  // so we read the live session from the client rather than React state.
+  const updatePassword = useCallback(async (newPassword: string) => {
+    if (!supabase) return { error: 'Cloud sync is not configured.' };
+    const { data } = await supabase.auth.getSession();
+    if (!data.session) return { error: 'No active session — verify the code first.' };
+    const { error } = await supabase.auth.updateUser({ password: newPassword });
+    return { error: error?.message ?? null };
+  }, []);
+
   const profile: UserProfile | null =
     session?.user && cloudProfile ? toUserProfile(session.user, cloudProfile) : null;
 
@@ -136,5 +193,9 @@ export const useAuth = (): AuthState => {
     signUp,
     signOut,
     updateProfile,
+    requestPasswordReset,
+    verifyOtpCode,
+    requestSignInCode,
+    updatePassword,
   };
 };

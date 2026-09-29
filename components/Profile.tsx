@@ -1,9 +1,10 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { User, Car, Save, X, LogIn, LogOut, Sparkles, ImagePlus, Shuffle, Check, AlertCircle, Shield, RefreshCw, Link2, Unlink } from 'lucide-react';
+import { User, Car, Save, X, LogIn, LogOut, Sparkles, ImagePlus, Shuffle, Check, AlertCircle, Shield, RefreshCw, Link2, Unlink, KeyRound } from 'lucide-react';
 import { Camera, CameraResultType, CameraSource } from '@capacitor/camera';
 import { UserProfile, VehicleClass } from '../types';
 import type { AuthState } from '../hooks/useAuth';
 import { supabase } from '../supabase/client';
+import { AuthRecoveryModal } from './AuthRecovery';
 
 const VEHICLE_CLASSES: VehicleClass[] = [
   'Muscle Car',
@@ -32,6 +33,7 @@ export const Profile: React.FC<ProfileProps> = ({ user, onSave, onCancel, auth }
   const [authBusy, setAuthBusy] = useState(false);
   const [authError, setAuthError] = useState<string | null>(null);
   const [confirmPending, setConfirmPending] = useState(false);
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
   const [handleStatus, setHandleStatus] = useState<'idle' | 'checking' | 'available' | 'taken'>('idle');
   const handleCheckTimer = useRef<number | null>(null);
 
@@ -349,6 +351,14 @@ export const Profile: React.FC<ProfileProps> = ({ user, onSave, onCancel, auth }
                             Account created — <strong>check your email</strong> for a confirmation link from Supabase, then come back and Sign In.
                         </div>
                     )}
+                    <button
+                        onClick={() => setRecoveryOpen(true)}
+                        className="pt-0.5 text-[11px] text-gray-500 hover:text-octane-accent transition-colors flex items-center gap-1.5"
+                    >
+                        <KeyRound className="w-3 h-3" /> Forgot password?
+                        <span className="text-gray-700">·</span>
+                        <span className="hover:underline">Forgot your username? Sign in with a code — your username will then be shown here in Profile.</span>
+                    </button>
                 </div>
             )}
             {!signedIn && !cloudOn && (
@@ -357,6 +367,13 @@ export const Profile: React.FC<ProfileProps> = ({ user, onSave, onCancel, auth }
                 </p>
             )}
         </div>
+
+        {/* Account recovery — forgot password + forgot username (sign in with code) */}
+        <AuthRecoveryModal
+            open={recoveryOpen}
+            onClose={() => setRecoveryOpen(false)}
+            auth={auth}
+        />
 
         {/* Life360 connector — imports real driving trips into the Safety leaderboard. */}
         {signedIn && cloudOn && (

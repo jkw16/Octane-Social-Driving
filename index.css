@@ -36,5 +36,112 @@ body {
    overlaps the status-bar clock. */
 .pt-safe { padding-top: env(safe-area-inset-top); }
 .pb-safe { padding-bottom: env(safe-area-inset-bottom); }
+
+/* ------------------------------------------------------------------
+   iOS WKWebView scroll fix — home screen "rubber-banded back to top".
+
+   Root cause: the app had two stacked scroll layers with no
+   containment — (a) the WKWebView's native document scroll
+   (UIScrollView rubber band) because html/body were never given a
+   fixed height/overflow, and (b) <main>'s own overflow-y-auto pane,
+   whose height was ambiguous because the root shell used
+   min-height: 100vh (indefinite height) instead of a definite one.
+   A vertical drag reaches the native layer, whose rubber band always
+   returns to document scroll offset 0 — the reported snap-back.
+
+   The fix declares ONE scroll layer (the <main> pane) and disarms
+   the native document scroll entirely:
+     - html/body: fixed height + overflow hidden + overscroll-behavior
+       none  → the document can never scroll or bounce; the native
+       UIScrollView has nothing to rubber-band.
+     - .app-shell: definite height (100vh with 100dvh override) so
+       <main class="flex-1 min-h-0"> resolves deterministically on
+       iOS WebKit.
+     - .app-scroll: momentum scrolling hint + overscroll-behavior
+       contain, so main's own scroll never chains out to the page.
+   ------------------------------------------------------------------ */
+html, body {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+.app-shell {
+  height: 100vh;
+  height: 100dvh; /* iOS 15.4+: adapts to dynamic keyboard/safe areas */
+}
+
+.app-scroll {
+  -webkit-overflow-scrolling: touch; /* legacy momentum hint for older iOS */
+  overscroll-behavior: contain;
+}
 .pl-safe { padding-left: env(safe-area-inset-left); }
 .pr-safe { padding-right: env(safe-area-inset-right); }
+
+/* ------------------------------------------------------------------
+   RESPONSIVE / DEVICE-ADAPTIVE BLOCK (fits every phone, no JS needed).
+   iOS exposes the real per-device notch/Dynamic-Island inset, home-
+   indicator inset and display dimensions through env()/dvh — we let
+   CSS do the adapting instead of detecting the device model in JS.
+
+   Sizes used as anchors (measured from App.tsx markup):
+     - tab bar: p-2 row + 59px NavButton (p-2 + 24px icon + 4px + ~15px
+       label + p-2) = ~75px content, + env(safe-area-inset-bottom) via
+       .pb-safe on the nav
+     - centre map button: 64px (w-16 h-16) raised 24px (-top-6) above
+       the row, so content must clear nav-top + 24px = ~99px + inset.
+       Full-screen overlays (TrackMode controls) use pb-28 (112px) for
+       the same reason.
+   ------------------------------------------------------------------ */
+
+/* --- 1. Content clearance above the fixed tab bar -------------------
+   The tab bar is `fixed bottom-0` with its own .pb-safe; screens that
+   scroll inside <main> used hard-coded pb-20/pb-24 (80/96px), which is
+   up to ~35px SHORT on notched phones (96 + 34px inset < 99 + 34 needed)
+   — the last card slid under the floating map button / tab bar.
+   CSS-only fix (no JSX changes): give <main> itself a bottom padding of
+   "home-indicator inset + 16px". Combined with the screens' existing
+   pb-20/pb-24 that lands every device at >= 112px + inset, which clears
+   the 99px + inset requirement. The 16px is not visually perceptible
+   (the last content already ends 96px above the bar on the reference
+   phone) and Profile — which has no bottom padding of its own — now
+   clears the home indicator. */
+main.app-scroll,
+main.pt-safe {
+  padding-bottom: calc(env(safe-area-inset-bottom) + 1.25rem);
+}
+
+/* --- 2. Content clearance below the Dynamic Island ------------------
+   Utility for full-screen overlays that position with absolute top-*:
+   CruiseMode's close map button / diagnostic pill uses top-4, which is
+   under the Dynamic Island on 14 Pro+. TrackMode already inlines
+   top-[calc(env(safe-area-inset-top)_+_1rem)]. */
+.top-safe-4 { top: calc(env(safe-area-inset-top) + 1rem); }
+
+/* --- 3. Modals clear notch AND home indicator -----------------------
+   Centered dialogs used max-h-[90vh] inside a fixed inset-0 p-4 wrapper.
+   5vh of margin (~44px on a 17 Pro Max) is not reliably above the
+   Dynamic Island, and the bottom can touch the home indicator. These
+   pair with .pt-safe/.pb-safe on the modal wrapper. */
+.octane-modal-panel {
+  /* fallback for iOS < 15.4 (no dvh) — keep 90vh-ish sizing */
+  max-height: calc(90vh - env(safe-area-inset-top) - env(safe-area-inset-bottom) + 2rem);
+}
+@supports (height: 100dvh) {
+  .octane-modal-panel {
+    max-height: calc(100dvh - env(safe-area-inset-top) - env(safe-area-inset-bottom) - 2rem);
+  }
+}
+
+/* --- 4. Narrow-phone guards (iPhone SE class, ~375pt) --------------- */
+img {
+  /* Defensive; Tailwind preflight already sets this, keep it explicit
+     so user avatars uploaded at any size never force horizontal scroll */
+  max-width: 100%;
+}
+/* Long run-on words (usernames, car names, event titles) must wrap
+   instead of pushing a grid column wider than the 375pt viewport. */
+.min-w-0,
+.flex-1 {
+  min-width: 0;
+}

@@ -55,7 +55,11 @@ export const Dashboard: React.FC<DashboardProps> = ({ user, onProfileClick, curr
   }, [user.isSignedIn]);
 
   return (
-    <div className="p-4 space-y-6 pb-24">
+    /* Scroll fix: pb-24 (96px) was just short of the fixed bottom tab
+       bar's height (~66px bar + env(safe-area-inset-bottom) home
+       indicator) on Apple devices, so the last row of content could rest
+       behind the tab bar. Clear it dynamically instead. */
+    <div className="p-4 space-y-6 pb-[calc(6.5rem+env(safe-area-inset-bottom))]">
       <header className="flex justify-between items-end mb-4">
         <div>
           <h1 className="text-3xl font-display font-black text-white">

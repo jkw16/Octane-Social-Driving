@@ -68,11 +68,14 @@ export const EventManagerModal: React.FC<EventManagerModalProps> = ({
 
   return (
     <div
-      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4"
+      /* Responsive: pt-safe/pb-safe lift the centered dialog above the
+         Dynamic Island and home indicator; .octane-modal-panel (index.css)
+         sizes the panel to the inset-aware viewport (was max-h-[90vh]). */
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm p-4 pt-safe pb-safe"
       onClick={onClose}
     >
       <div
-        className="bg-octane-dark w-full max-w-md rounded-2xl border border-white/10 p-5 animate-in slide-in-from-bottom-4 duration-300 max-h-[90vh] overflow-y-auto"
+        className="bg-octane-dark w-full max-w-md rounded-2xl border border-white/10 p-5 animate-in slide-in-from-bottom-4 duration-300 octane-modal-panel overflow-y-auto"
         onClick={(e) => e.stopPropagation()}
       >
         <div className="flex justify-between items-center mb-4">

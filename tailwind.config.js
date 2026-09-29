@@ -9,6 +9,10 @@ export default {
     './App.tsx',
     './components/**/*.{ts,tsx}',
     './src/**/*.{ts,tsx}',
+    // responsive hooks live here; keep their Tailwind classes seen by the
+    // local build scanner
+    './hooks/**/*.{ts,tsx}',
+    './index.css',
   ],
   theme: {
     extend: {

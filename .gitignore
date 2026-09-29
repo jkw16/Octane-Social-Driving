@@ -27,3 +27,6 @@ dist-ssr
 .claude/settings.local.json
 supabase/.temp/
 /build/
+
+# Local Netlify folder
+.netlify
