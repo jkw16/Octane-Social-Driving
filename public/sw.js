@@ -14,7 +14,7 @@
 // PWA; the Gemini voice/LLM features still require network. The goal is that
 // the app shell opens and renders when the phone is offline.
 
-const CACHE_NAME = 'octane-shell-v10';
+const CACHE_NAME = 'octane-shell-v11';
 // Map tiles get their own cache: a drive can pull hundreds of vector tiles
 // (~20-50 KB each) plus the style JSON, glyphs and sprites. Capping entries
 // keeps the warm cache around the plan's ~100 MB budget (LRU trim on insert).
