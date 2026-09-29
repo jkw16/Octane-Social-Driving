@@ -3,7 +3,7 @@ import { MapPin, Crosshair, Navigation, RefreshCw, PenTool, Undo, Trash2, Save, 
 import * as maplibregl from 'maplibre-gl';
 import { SessionResult } from '../types';
 import { supabase, isSupabaseConfigured } from '../supabase/client';
-import { geminiGenerate, responseText, responseChunks } from '../supabase/gemini';
+import { hasAiPlacesSession, findNearestRaceTrack } from '../services/geocoding';
 import { MapCanvas, addGeoJsonSource, updateGeoJsonSource } from './map';
 import { createUserPuckMarker, createTrackMarker } from './map/markers';
 
@@ -244,51 +244,20 @@ export const TrackMode: React.FC = () => {
   }, [routePoints]);
 
   const findNearestTrack = async (lat: number, lng: number) => {
-      if (!supabase) return;
-      // AI features go through the gemini-proxy Edge Function, which requires
-      // a signed-in session (JWT verification). Guests skip the nearest-circuit lookup.
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
+      // Places lookups are proxied through the gemini-proxy Edge Function,
+      // which requires a signed-in session (JWT verification). Guests skip the
+      // nearest-circuit lookup. See services/geocoding.ts.
+      if (!(await hasAiPlacesSession())) return;
       setIsLoadingTrack(true);
       try {
-          const response = await geminiGenerate({
-              contents: "Find the single nearest automotive race track — a real road course or racing circuit built for full-size automobiles (cars), not karts. Strictly EXCLUDE go-kart tracks, karting centers, family fun centers (like Bob-O's), amusement parks, and anything that is not an automotive road course or closed circuit for cars. Calculate the driving distance.",
-              config: {
-                  tools: [{ googleMaps: {} }],
-                  toolConfig: {
-                      retrievalConfig: {
-                          latLng: { latitude: lat, longitude: lng }
-                      }
-                  }
-              }
-          });
-
-          const chunks = responseChunks(response);
-          const text = responseText(response);
-
-          let trackName = "Unknown Circuit";
-          let trackUri = "";
-
-          const mapChunk = chunks?.find((c: any) => c.web?.title || c.web?.uri);
-
-          if (mapChunk && mapChunk.web) {
-              trackName = mapChunk.web.title || trackName;
-              trackUri = mapChunk.web.uri || "";
-          } else {
-              trackName = text.split(',')[0] || "Nearest Circuit";
-          }
-
-          const distanceMatch = text.match(/(\d+(\.\d+)?)\s*(miles|mi|km)/i);
-          const distanceDisplay = distanceMatch ? distanceMatch[0] : "Calculating...";
-
+          const track = await findNearestRaceTrack({ lat, lng });
           setNearestTrack({
-              name: trackName,
-              distance: distanceDisplay,
-              uri: trackUri
+              name: track.name,
+              distance: track.distance ?? "Calculating...",
+              uri: track.uri
           });
-
       } catch (e) {
-          console.error("Failed to find track via Google Maps:", e);
+          console.error("Failed to find track via geocoding:", e);
           setNearestTrack({
               name: "Nearest Circuit",
               distance: "Unknown",

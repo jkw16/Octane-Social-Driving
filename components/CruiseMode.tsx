@@ -1,10 +1,9 @@
 import React, { useEffect, useRef, useState } from 'react';
 import * as maplibregl from 'maplibre-gl';
 import { Navigation, Search, ArrowRight, X, Loader2, Map as MapIcon, ChevronRight } from 'lucide-react';
-import { supabase } from '../supabase/client';
-import { geminiGenerate, responseText, responseChunks } from '../supabase/gemini';
 import { MapCanvas, addGeoJsonSource, updateGeoJsonSource } from './map';
-import { createUserPuckMarker } from './map/markers';
+import { createCarPuckMarker, setCarPuckHeading } from './map/markers';
+import { resolvePlaceNear, hasAiPlacesSession } from '../services/geocoding';
 
 // Build a GeoJSON Polygon approximating a geographic circle of `radiusMeters`
 // around [lng, lat] using the destination-point formula (haversine-based).
@@ -76,7 +75,16 @@ export const CruiseMode: React.FC = () => {
 
         if (mapInstanceRef.current && markerRef.current) {
           markerRef.current.setLngLat([longitude, latitude]);
-          mapInstanceRef.current.jumpTo({ center: [longitude, latitude], zoom: 16 });
+          // Glide to each fix instead of jumping — easeTo over the interval
+          // between fixes reads like a car moving, not a teleport. Linear
+          // easing (no bow) so chained easeTo calls don't pulse.
+          mapInstanceRef.current.easeTo({
+            center: [longitude, latitude],
+            zoom: 16,
+            duration: 750,
+            easing: (t) => t,
+          });
+          if (gpsHeading) setCarPuckHeading(markerRef.current, gpsHeading);
           // Move the 500-ft range circle with the user.
           updateGeoJsonSource(
             mapInstanceRef.current,
@@ -101,8 +109,9 @@ export const CruiseMode: React.FC = () => {
 
     mapInstanceRef.current = map;
 
-    // User marker (glowing cyan puck).
-    const marker = createUserPuckMarker().setLngLat(center).addTo(map);
+    // User marker — car puck with a heading needle (rotates as GPS heading
+    // streams in; see the watch effect).
+    const marker = createCarPuckMarker().setLngLat(center).addTo(map);
     markerRef.current = marker;
 
     // 500-ft proxy-chat range circle — light-blue transparent fill around the
@@ -153,48 +162,23 @@ export const CruiseMode: React.FC = () => {
   };
 
   const handleSmartSearch = async () => {
-      if (!destinationInput.trim() || !supabase) return;
-      // AI features go through the gemini-proxy Edge Function (requires sign-in).
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) return;
+      if (!destinationInput.trim()) return;
+      // Places lookups are proxied through the gemini-proxy Edge Function
+      // (requires sign-in) — see services/geocoding.ts.
+      if (!(await hasAiPlacesSession())) return;
 
       setIsSearching(true);
       setResolvedPlace(null);
 
       try {
-        const response = await geminiGenerate({
-            contents: `Find the specific location for: "${destinationInput}". If it's a generic term like "gas" or "coffee", find the nearest one. Provide the name and address.`,
-            config: {
-                tools: [{ googleMaps: {} }],
-                toolConfig: {
-                    retrievalConfig: {
-                        latLng: currentLocation ? { latitude: currentLocation.lat, longitude: currentLocation.lng } : undefined
-                    }
-                }
-            }
-        });
-
-        const text = responseText(response);
-        const chunks = responseChunks(response);
-
-        // Extract data from Grounding Chunks (Priority)
-        const mapChunk = chunks.find((c: any) => c.web?.uri && c.web?.title);
-
-        let placeName = destinationInput;
-        let placeUri = "";
-
-        if (mapChunk && mapChunk.web) {
-             placeName = mapChunk.web.title || placeName;
-             placeUri = mapChunk.web.uri || "";
-        } else {
-             // Fallback to text parsing if no chunks (unlikely with valid maps result)
-             placeName = text.split('\n')[0] || destinationInput;
-        }
-
+        const place = await resolvePlaceNear(
+          destinationInput,
+          currentLocation ? { lat: currentLocation.lat, lng: currentLocation.lng } : undefined
+        );
         setResolvedPlace({
-            name: placeName,
+            name: place.name,
             address: "Tap navigate for details", // Simplified for UI
-            uri: placeUri
+            uri: place.uri
         });
         setIsRouteActive(true);
 

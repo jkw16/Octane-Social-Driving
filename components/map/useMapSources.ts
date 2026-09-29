@@ -74,3 +74,81 @@ export function useGeoJsonSource(
     updateGeoJsonSource(map, sourceId, data);
   }, [map, sourceId, data]);
 }
+
+export interface ClusterSourceOptions extends AddGeoJsonOptions {
+  /** Radius that determines cluster groupings, in pixels. Default 60. */
+  clusterRadius?: number;
+  /** Color of the cluster bubbles (brand accent by default). */
+  clusterColor?: string;
+  /** Unclustered-point circle color (default: brand accent). */
+  pointColor?: string;
+}
+
+/**
+ * Adds a clustered GeoJSON source + the standard MapLibre cluster recipe
+ * (cluster bubbles in brand colors, count labels, unclustered points).
+ * Use for meetup pins / many-car groups — the car-level markers still come
+ * from components/map/markers.ts. `data` must be a FeatureCollection of
+ * Points (clustered sources cannot render other geometries).
+ */
+export function addClusteredSource(
+  map: maplibregl.Map,
+  sourceId: string,
+  data: GeoJsonData,
+  options: ClusterSourceOptions = {}
+): void {
+  whenStyleReady(map, () => {
+    if (map.getSource(sourceId)) return;
+    const accent = options.clusterColor ?? '#06b6d4';
+    map.addSource(sourceId, {
+      type: 'geojson',
+      data: data as any,
+      cluster: true,
+      clusterRadius: options.clusterRadius ?? 60,
+    });
+    map.addLayer({
+      id: `${sourceId}-clusters`,
+      type: 'circle',
+      source: sourceId,
+      filter: ['has', 'point_count'],
+      paint: {
+        'circle-color': accent,
+        'circle-opacity': 0.25,
+        'circle-stroke-color': accent,
+        'circle-stroke-width': 2,
+        'circle-radius': [
+          'interpolate', ['linear'], ['get', 'point_count'],
+          2, 14,
+          10, 24,
+          50, 34,
+        ],
+      },
+    });
+    map.addLayer({
+      id: `${sourceId}-cluster-count`,
+      type: 'symbol',
+      source: sourceId,
+      filter: ['has', 'point_count'],
+      layout: {
+        'text-field': '{point_count_abbreviated}',
+        'text-font': ['Noto Sans Regular'],
+        'text-size': 12,
+      },
+      paint: {
+        'text-color': '#0f172a',
+      },
+    });
+    map.addLayer({
+      id: `${sourceId}-unclustered`,
+      type: 'circle',
+      source: sourceId,
+      filter: ['!', ['has', 'point_count']],
+      paint: {
+        'circle-color': options.pointColor ?? accent,
+        'circle-radius': 9,
+        'circle-stroke-width': 2,
+        'circle-stroke-color': '#ffffff',
+      },
+    });
+  });
+}
