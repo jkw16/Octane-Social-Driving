@@ -195,7 +195,9 @@ export const TrackMode: React.FC = () => {
           id: 'route',
           type: 'line',
           paint: {
-            'line-color': '#06b6d4',
+            // Red so the route reads against the dark cyan-accented streets
+            // (cyan blended into the basemap's road color).
+            'line-color': '#ef4444',
             'line-width': 4,
             'line-opacity': 0.7,
             'line-dasharray': [2, 2],
